@@ -7,6 +7,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import * as safari from "./safari.js";
 import { WebSocketServer } from "ws";
@@ -19,6 +20,13 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB cap on POST body — prevents DoS
+
+// ========== MCP TRANSPORT CONFIGURATION ==========
+// Supports both stdio (default) and HTTP transport modes
+// HTTP transport allows connecting via URL for remote MCP servers
+const MCP_TRANSPORT = process.env.MCP_TRANSPORT || "stdio"; // "stdio" or "http"
+const MCP_HTTP_PORT = parseInt(process.env.MCP_HTTP_PORT || "9225", 10);
+const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 
 // ========== MULTI-INSTANCE: concurrent instances coexist (never kill siblings) ==========
 // This block previously SIGTERM'd every other safari-mcp instance running >10s to
@@ -65,7 +73,7 @@ function _saveOwnershipFile(urls) {
 // ========== MEMORY GUARD: track & auto-close MCP-opened tabs ==========
 const MAX_TABS = parseInt(process.env.MCP_MAX_TABS || "6", 10);
 const MEMORY_CHECK_INTERVAL_MS = parseInt(process.env.MCP_MEMORY_CHECK_MS || "60000", 10);
-const WEBKIT_MEMORY_LIMIT_MB = parseInt(process.env.MCP_WEBKIT_LIMIT_MB || "3000", 10);
+const WEBKIT_MEMORY_LIMIT_MB = parseInt(process.env.MCP_WEBKIT_LIMIT_MB || "5000", 10);
 
 // Track tabs opened by THIS session (index → {url, openedAt})
 const _openedTabs = new Map();
@@ -2253,5 +2261,33 @@ try {
 } catch { /* banner is best-effort, never block startup */ }
 
 _startMemoryMonitor();
-const transport = new StdioServerTransport();
-await server.connect(transport);
+
+// ========== CONNECT TRANSPORT ==========
+// Supports both stdio (default) and HTTP transport modes
+if (MCP_TRANSPORT === "http") {
+	// HTTP transport mode - for remote MCP servers
+	const transport = new StreamableHTTPServerTransport({
+		sessionIdGenerator: () => randomUUID(),
+	});
+
+	// Create HTTP server for MCP requests
+	const httpServer = createServer((req, res) => {
+		transport.handleRequest(req, res);
+	});
+
+	// Connect transport to server
+	await server.connect(transport);
+
+	// Start HTTP server
+	httpServer.listen(MCP_HTTP_PORT, MCP_HTTP_HOST, () => {
+		console.error(`[Safari MCP] HTTP transport listening on http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}`);
+		console.error(`[Safari MCP] Configure Claude Code with: {"url": "http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}/mcp"}`);
+	});
+
+	// Keep process alive (HTTP mode is persistent, unlike stdio which is event-driven)
+	console.error("[Safari MCP] Running in HTTP mode - press Ctrl+C to stop");
+} else {
+	// Stdio transport mode (default)
+	const transport = new StdioServerTransport();
+	await server.connect(transport);
+}

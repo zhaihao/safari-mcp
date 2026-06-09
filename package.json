@@ -11,6 +11,8 @@
   },
   "scripts": {
     "start": "node index.js",
+    "mcp:http": "MCP_TRANSPORT=http node index.js",
+    "mcp:stdio": "MCP_TRANSPORT=stdio node index.js",
     "test": "node --test tests/smoke.test.js",
     "postinstall": "node scripts/postinstall.cjs || true"
   },
